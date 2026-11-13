@@ -77,3 +77,35 @@
   background: #a5b4fc;
   cursor: not-allowed;
 }
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.row.user {
+  align-items: flex-end;
+}
+
+.row.assistant {
+  align-items: flex-start;
+}
+
+.meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tag {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #3730a3;
+  background: #e0e7ff;
+  border-radius: 999px;
+}
+
+.tag.warn {
+  color: #92400e;
+  background: #fef3c7;
+}

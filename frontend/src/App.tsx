@@ -2,7 +2,13 @@ import { useState, useRef, useEffect } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 
-type Message = { role: 'user' | 'assistant'; text: string }
+type Message = {
+  role: 'user' | 'assistant'
+  text: string
+  intent?: string
+  confidence?: number
+  needsReview?: boolean
+}
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000'
 
@@ -23,8 +29,8 @@ function App() {
     const text = input.trim()
     if (!text || loading) return
 
-    // Previous turns, skipping the greeting
-    const history = messages.slice(1)
+    // Send only role + text, skipping the greeting
+    const history = messages.slice(1).map((m) => ({ role: m.role, text: m.text }))
 
     setMessages([...messages, { role: 'user', text }])
     setInput('')
@@ -38,7 +44,16 @@ function App() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Request failed')
-      setMessages((prev) => [...prev, { role: 'assistant', text: data.reply }])
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: data.reply,
+          intent: data.intent,
+          confidence: data.confidence,
+          needsReview: data.needsReview,
+        },
+      ])
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -55,8 +70,18 @@ function App() {
 
       <div className="chat-messages">
         {messages.map((m, i) => (
-          <div key={i} className={`bubble ${m.role}`}>
-            {m.text}
+          <div key={i} className={`row ${m.role}`}>
+            <div className={`bubble ${m.role}`}>{m.text}</div>
+            {m.intent && (
+              <div className="meta">
+                <span className="tag">
+                  {m.intent.replace('_', ' ')} · {Math.round((m.confidence ?? 0) * 100)}%
+                </span>
+                {m.needsReview && (
+                  <span className="tag warn">Flagged for human review</span>
+                )}
+              </div>
+            )}
           </div>
         ))}
         {loading && <div className="bubble assistant typing">Typing…</div>}
