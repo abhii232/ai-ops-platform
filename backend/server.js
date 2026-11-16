@@ -7,8 +7,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-flash-latest'];
+const MAX_HISTORY = 10;
 
 const INTENTS = ['billing', 'technical_issue', 'refund', 'escalation', 'general'];
 const REVIEW_THRESHOLD = 0.7;
@@ -18,7 +19,7 @@ app.use(express.json());
 
 const SYSTEM_PROMPT =
   'You are a friendly, concise customer support assistant. ' +
-  'Answer clearly in 1-3 sentences. If you do not know something, say so. ' +
+  'Answer clearly in 1-3 short sentences. If you do not know something, say so. ' +
   "For every turn, also classify the intent of the customer's LATEST message as one of: " +
   INTENTS.join(', ') +
   '. Give a confidence between 0 and 1. Use a LOW confidence if the message is vague or ambiguous.';
@@ -33,28 +34,32 @@ const RESPONSE_SCHEMA = {
   required: ['reply', 'intent', 'confidence'],
 };
 
-// Retries temporary Gemini errors (503 overloaded / 429 rate limit),
-// then falls back to other models if the main one keeps failing.
-async function generateWithRetry(params) {
+// Tries each model once, moving to the next immediately on a temporary
+// error (503 overloaded, 429 rate limit, network failure).
+async function generateWithFallback(params) {
   const models = [MODEL, ...FALLBACK_MODELS.filter((m) => m !== MODEL)];
   let lastError;
 
   for (const model of models) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        return await ai.models.generateContent({ ...params, model });
-      } catch (error) {
-        lastError = error;
-        const msg = String(error.message || '');
-        const temporary =
-          error.status === 503 ||
-          error.status === 429 ||
-          msg.includes('UNAVAILABLE') ||
-          msg.includes('RESOURCE_EXHAUSTED');
-        console.warn(`Gemini ${model} attempt ${attempt} failed (temporary: ${temporary})`);
-        if (!temporary) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
-      }
+    const started = Date.now();
+    try {
+      const response = await ai.models.generateContent({ ...params, model });
+      console.log(`Gemini ${model} answered in ${Date.now() - started} ms`);
+      return response;
+    } catch (error) {
+      lastError = error;
+      const msg = String(error.message || '');
+      // "temporary" here means: skip this model and try the next one
+      const temporary =
+        error.status === 503 ||
+        error.status === 429 ||
+        error.status === 404 ||
+        msg.includes('UNAVAILABLE') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('NOT_FOUND') ||
+        msg.includes('fetch failed');
+      console.warn(`Gemini ${model} failed after ${Date.now() - started} ms (temporary: ${temporary})`);
+      if (!temporary) throw error;
     }
   }
   throw lastError;
@@ -79,6 +84,7 @@ app.get('/models', async (req, res) => {
 });
 
 app.post('/chat', async (req, res) => {
+  const requestStart = Date.now();
   try {
     const { message, history = [] } = req.body;
 
@@ -87,19 +93,20 @@ app.post('/chat', async (req, res) => {
     }
 
     const contents = [
-      ...history.map((h) => ({
+      ...history.slice(-MAX_HISTORY).map((h) => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.text }],
       })),
       { role: 'user', parts: [{ text: message }] },
     ];
 
-    const response = await generateWithRetry({
+    const response = await generateWithFallback({
       contents,
       config: {
         systemInstruction: SYSTEM_PROMPT,
         responseMimeType: 'application/json',
         responseSchema: RESPONSE_SCHEMA,
+        maxOutputTokens: 400,
       },
     });
 
@@ -116,6 +123,7 @@ app.post('/chat', async (req, res) => {
       console.warn('Could not parse structured output, using fallback');
     }
 
+    console.log(`/chat total ${Date.now() - requestStart} ms`);
     res.json({
       reply,
       intent,
